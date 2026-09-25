@@ -1,0 +1,119 @@
+# ──────────────────────────────────────────────────────────────
+# Jules Agent — Issue Implementation Workflow
+#
+# Trigger:  An issue (or sub-issue) is labeled "Jules"
+# Result:   Jules implements the ticket on a branch and opens a PR.
+#
+# Sub-issue support:
+#   Developers can specify a starting branch in the issue body:
+#     Branch: feat/42-parent-feature
+#   If omitted, Jules branches from `main`.
+# ──────────────────────────────────────────────────────────────
+name: "Jules: Implement Issue"
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  jules-task:
+    runs-on: ubuntu-latest
+    if: github.event.label.name == 'Jules'
+    steps:
+      # ── Parse starting branch from issue body ──────────────
+      # Looks for "Branch: <branch-name>" in the issue description.
+      # Falls back to "main" if not specified.
+      - name: Resolve starting branch
+        id: branch
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          # Match "Branch: <value>" (case-insensitive, leading whitespace ok)
+          BRANCH=$(echo "$ISSUE_BODY" \
+            | grep -iE '^\s*(starting\s+)?branch\s*:\s*' \
+            | head -1 \
+            | sed -E 's/^\s*(starting\s+)?branch\s*:\s*//i' \
+            | xargs)
+
+          if [ -z "$BRANCH" ]; then
+            BRANCH="main"
+            echo "No branch directive found — defaulting to main"
+          else
+            echo "Resolved starting branch: ${BRANCH}"
+          fi
+
+          echo "name=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+      # ── Invoke Jules ───────────────────────────────────────
+      - name: Invoke Jules
+        uses: google-labs-code/jules-invoke@v1
+        with:
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          starting_branch: ${{ steps.branch.outputs.name }}
+          prompt: |
+            You are working on a **multi-agent FastAPI microservice** built with
+            Python 3.11+, Domain-Driven Design (DDD), and Hexagonal Architecture.
+
+            ## Issue to Implement
+
+            **Title:** ${{ github.event.issue.title }}
+            **Number:** #${{ github.event.issue.number }}
+            **Body:**
+            ${{ github.event.issue.body }}
+
+            ## Before You Start
+
+            1. **Read `AGENTS.md`** at the repo root — it contains mandatory coding
+               standards, commit conventions, and the review response protocol.
+            2. **Read the architecture skill** at
+               `.agents/skills/fastapi-multiagent-microservice/SKILL.md` — it defines
+               the directory structure, layer boundaries, and validation checklist.
+            3. If you need code examples, read the `references/` and `examples/`
+               directories inside the skill folder.
+
+            ## Implementation Steps
+
+            1. **Understand the full requirement.** Read the issue title, body, and
+               any linked parent issues or sub-issues.
+            2. **Determine the change type** and create the branch:
+               - Bug fix → `jules/fix/${{ github.event.issue.number }}-<short-slug>`
+               - Feature → `jules/feat/${{ github.event.issue.number }}-<short-slug>`
+               - Refactor → `jules/refactor/${{ github.event.issue.number }}-<short-slug>`
+               - Chore/docs → `jules/chore/${{ github.event.issue.number }}-<short-slug>`
+            3. **Get inspiration from documentation found in "".agents/skills/fastapi-multiagent-microservice/"**
+               - Read `AGENTS.md` at the repo root — it contains mandatory coding standards.
+               - Be flexible and creative if needed in your implementation, but always adhere to the architecture skill and coding standards.
+            4. **Write clean, atomic commits** (target 100–200 lines each) with
+               conventional commit messages:
+               - `feat(scope): description`
+               - `fix(scope): description`
+               - `refactor(scope): description`
+               - `chore(scope): description`
+               - `style(scope): description`
+               - `docs(scope): description`
+               - `test(scope): description`
+            5. **Order commits logically:**
+               1. Models / schemas
+               2. Repository / service layer
+               3. Domain logic / agents
+               4. API routes
+               5. Tests
+               6. Documentation
+            6. **Run the validation checklist** from `SKILL.md` before finalizing:
+               - No import crosses a forbidden layer boundary
+               - No endpoint contains business logic
+               - All I/O is async — no blocking calls
+               - `structlog` only (never `import logging`)
+               - Full type hints (`mypy --strict` clean)
+               - `BaseSettings` with `Field(default=..., description=...)`
+            7. **Open a pull request** targeting `${{ steps.branch.outputs.name }}`:
+               - Title: `<type>(<scope>): <description> (#${{ github.event.issue.number }})`
+               - Body must include: Summary, `Closes #${{ github.event.issue.number }}`,
+                 bulleted list of changes, testing notes, and the validation checklist
+               - Add self-review inline comments on non-obvious decisions
+
