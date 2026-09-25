@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       !github.event.issue.pull_request
-      && contains(github.event.comment.body, '@Jules')
+      && contains(github.event.comment.body, '$Jules')
       && contains(join(github.event.issue.labels.*.name, ','), 'Jules')
     steps:
       - name: Invoke Jules
