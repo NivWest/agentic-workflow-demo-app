@@ -1,270 +1,37 @@
-# ──────────────────────────────────────────────────────────────
-# Jules Agent — PR Review Response Workflow
-#
-# Trigger:  A developer posts a review comment on a Jules PR
-# Result:   Jules reads the feedback, makes fix commits, and
-#           replies to each comment.
-# ──────────────────────────────────────────────────────────────
 name: "Jules: Respond to Review"
 
 on:
-  # Inline review comments (file-level)
-  pull_request_review_comment:
-    types: [created]
   pull_request_review:
     types: [submitted]
-
-  # General PR comments (conversation-level)
-  issue_comment:
+  pull_request_review_comment:
     types: [created]
-
-# One feedback cycle at a time per PR
-concurrency:
-  group: jules-review-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: false          # Don't cancel — queue feedback
 
 permissions:
   contents: write
   pull-requests: write
-  contents: read
-  issues: read
 
 jobs:
-  # ────────────────────────────────────────────────────────────
-  # Gate: Only act on PRs created by Jules
-  # ────────────────────────────────────────────────────────────
-  gate:
   jules-review:
     runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-      pr_number: ${{ steps.check.outputs.pr_number }}
-      comment_body: ${{ steps.check.outputs.comment_body }}
-      commenter: ${{ steps.check.outputs.commenter }}
-    # Only respond when:
-    #   1. The review requests changes (not approvals or plain comments)
-    #   2. The PR branch was created by Jules (jules/* prefix)
     if: >-
-      github.event.review.state == 'changes_requested'
+      contains(github.event.review.body || github.event.comment.body, '@Jules')
       && startsWith(github.event.pull_request.head.ref, 'jules/')
     steps:
-      - name: Determine if this is a Jules PR
-        id: check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # ── Resolve PR number ──────────────────────────────
-          if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
-            PR_NUMBER="${{ github.event.pull_request.number }}"
-            COMMENT_BODY="${{ github.event.comment.body }}"
-            COMMENTER="${{ github.event.comment.user.login }}"
-          else
-            # issue_comment — only act if this is a PR comment
-            IS_PR="${{ github.event.issue.pull_request && 'true' || 'false' }}"
-            if [ "$IS_PR" != "true" ]; then
-              echo "should_run=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            PR_NUMBER="${{ github.event.issue.number }}"
-            COMMENT_BODY="${{ github.event.comment.body }}"
-            COMMENTER="${{ github.event.comment.user.login }}"
-          fi
-      - name: Invoke Jules with review feedback
+      - name: Invoke Jules
         uses: google-labs-code/jules-invoke@v1
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
           starting_branch: ${{ github.event.pull_request.head.ref }}
           prompt: |
-            ## Review Feedback — PR #${{ github.event.pull_request.number }}
+            PR #${{ github.event.pull_request.number }} — a reviewer mentioned you.
 
-          # ── Check if the PR belongs to Jules ───────────────
-          # Match by branch prefix (jules/) or PR author
-          PR_DATA=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" \
-            --jq '{branch: .head.ref, author: .user.login}')
-          BRANCH=$(echo "$PR_DATA" | jq -r '.branch')
-          AUTHOR=$(echo "$PR_DATA" | jq -r '.author')
-            A reviewer has requested changes on your pull request.
+            **Comment:**
+            ${{ github.event.review.body || github.event.comment.body }}
 
-          IS_JULES="false"
-          if [[ "$BRANCH" == jules/* ]] || \
-             [[ "$AUTHOR" == *jules* ]] || \
-             [[ "$AUTHOR" == *Jules* ]]; then
-            IS_JULES="true"
-          fi
-            **PR Title:** ${{ github.event.pull_request.title }}
-            **Branch:** ${{ github.event.pull_request.head.ref }}
-            **Reviewer:** @${{ github.event.review.user.login }}
+            Read all review comments on this PR, then follow the
+            "Review Feedback Response Protocol" in `AGENTS.md`:
 
-          # Don't respond to Jules' own comments (avoid loops)
-          if [[ "$COMMENTER" == *jules* ]] || [[ "$COMMENTER" == *Jules* ]]; then
-            IS_JULES="false"
-          fi
-            ### Reviewer's Comment
-
-          echo "should_run=${IS_JULES}" >> "$GITHUB_OUTPUT"
-          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "commenter=${COMMENTER}" >> "$GITHUB_OUTPUT"
-            ${{ github.event.review.body }}
-
-          # Truncate comment body for output (GitHub has limits)
-          echo "comment_body<<COMMENT_EOF" >> "$GITHUB_OUTPUT"
-          echo "$COMMENT_BODY" | head -c 4000 >> "$GITHUB_OUTPUT"
-          echo "COMMENT_EOF" >> "$GITHUB_OUTPUT"
-            ### Instructions — Follow the Review Feedback Protocol
-
-  # ────────────────────────────────────────────────────────────
-  # Acknowledge: React to the comment so the reviewer knows
-  # Jules is processing it
-  # ────────────────────────────────────────────────────────────
-  acknowledge:
-    needs: gate
-    if: needs.gate.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Add eyes reaction to comment
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api \
-            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
-            -f content='eyes'
-            Read `AGENTS.md` in the repo root, specifically the
-            **"Review Feedback Response Protocol"** section. Then:
-
-  # ────────────────────────────────────────────────────────────
-  # Dispatch: Send the review feedback to Jules
-  # ────────────────────────────────────────────────────────────
-  dispatch-feedback:
-    needs: [gate, acknowledge]
-    if: needs.gate.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-            1. **Read every review comment** on PR #${{ github.event.pull_request.number }}
-               before making any changes. Understand the full picture.
-            2. **Acknowledge each comment** with a reply — explain what you changed
-               or respectfully discuss alternatives if you disagree.
-            3. **Make focused fix commits** for each piece of feedback:
-               ```
-               fix(review): address ${{ github.event.review.user.login }}'s feedback on <topic>
-               ```
-            4. **Do NOT force-push or squash.** Reviewers need to see incremental
-               fixes against their original comments.
-            5. **Do NOT resolve comment threads.** Let the reviewer do that.
-            6. **Re-request review** from @${{ github.event.review.user.login }} once
-               all comments are addressed. Post a summary comment listing what changed.
-
-      - name: Collect all pending review comments
-        id: collect
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
-        run: |
-          # Fetch all unresolved review comments on this PR
-          COMMENTS=$(gh api \
-            "repos/${{ github.repository }}/pulls/${PR_NUMBER}/comments" \
-            --jq '[.[] | select(.user.login != "jules-bot" and .user.login != "Jules") | {
-              id: .id,
-              path: .path,
-              line: .line,
-              body: .body,
-              author: .user.login,
-              created_at: .created_at
-            }]')
-            ### Architecture Reminder
-
-          echo "review_comments<<COMMENTS_EOF" >> "$GITHUB_OUTPUT"
-          echo "$COMMENTS" >> "$GITHUB_OUTPUT"
-          echo "COMMENTS_EOF" >> "$GITHUB_OUTPUT"
-            Read `.agents/skills/fastapi-multiagent-microservice/SKILL.md` and run
-            the validation checklist before pushing any fix commits.
-
-      - name: Dispatch feedback to Jules
-        env:
-          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
-          GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          REPO_FULL_NAME: ${{ github.repository }}
-          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
-          COMMENTER: ${{ needs.gate.outputs.commenter }}
-          REVIEW_COMMENTS: ${{ steps.collect.outputs.review_comments }}
-        run: |
-          cat <<'FEEDBACK_EOF' > /tmp/jules-feedback.md
-          ## Review Feedback to Address
-
-          PR #${PR_NUMBER} has received review feedback from ${COMMENTER}.
-
-          ### Instructions
-
-          1. Read AGENTS.md — follow the "Review Feedback Response Protocol"
-          2. Read each comment carefully before making changes
-          3. Make focused fix commits using: fix(review): address <topic>
-          4. Reply to each comment explaining what was changed
-          5. Do NOT force-push or squash — keep incremental history
-          6. Do NOT resolve comment threads — let the reviewer do that
-          7. Re-request review when all comments are addressed
-
-          ### Comments
-
-          ${REVIEW_COMMENTS}
-          FEEDBACK_EOF
-
-          FEEDBACK_CONTENT=$(cat /tmp/jules-feedback.md)
-
-          # Option 1: Jules API
-          if [ -n "$JULES_API_KEY" ]; then
-            echo "Sending review feedback to Jules API..."
-            curl -sf -X POST \
-              "https://jules.googleapis.com/v1/projects/${GOOGLE_CLOUD_PROJECT}/tasks" \
-              -H "Authorization: Bearer ${JULES_API_KEY}" \
-              -H "Content-Type: application/json" \
-              -d @- <<EOF
-          {
-            "repository": "${REPO_FULL_NAME}",
-            "pull_request_number": ${PR_NUMBER},
-            "task_type": "review_response",
-            "task": $(echo "$FEEDBACK_CONTENT" | jq -Rs .),
-            "settings": {
-              "commit_style": "conventional",
-              "max_lines_per_commit": 200,
-              "reply_to_comments": true
-            }
-          }
-          EOF
-            echo "✅ Review feedback dispatched to Jules"
-
-          # Option 2: Repository dispatch fallback
-          else
-            echo "JULES_API_KEY not set — using repository_dispatch"
-            curl -sf -X POST \
-              "https://api.github.com/repos/${REPO_FULL_NAME}/dispatches" \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              -d @- <<EOF
-          {
-            "event_type": "jules-review-feedback",
-            "client_payload": {
-              "pr_number": ${PR_NUMBER},
-              "task": $(echo "$FEEDBACK_CONTENT" | jq -Rs .)
-            }
-          }
-          EOF
-            echo "✅ Repository dispatch sent for review feedback"
-          fi
-
-  # ────────────────────────────────────────────────────────────
-  # Error: notify on failure
-  # ────────────────────────────────────────────────────────────
-  notify-failure:
-    needs: [gate, dispatch-feedback]
-    if: failure() && needs.gate.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Comment on PR about failure
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
-        run: |
-          gh pr comment "$PR_NUMBER" \
-            --repo "${{ github.repository }}" \
-            --body "⚠️ **Jules Agent** — Failed to process review feedback. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+            1. Reply to each comment explaining what you changed
+            2. Make focused fix commits: `fix(review): address <topic>`
+            3. Do NOT force-push, squash, or resolve comment threads
+            4. Re-request review when done

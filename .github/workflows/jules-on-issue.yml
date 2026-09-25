@@ -88,7 +88,7 @@ jobs:
             3. **Get inspiration from documentation found in "".agents/skills/fastapi-multiagent-microservice/"**
                - Read `AGENTS.md` at the repo root — it contains mandatory coding standards.
                - Be flexible and creative if needed in your implementation, but always adhere to the architecture skill and coding standards.
-            4. **Write clean, atomic commits** (target 100–200 lines each) with
+            4. **Write clean, atomic commits** (target 50–100 lines each) with
                conventional commit messages:
                - `feat(scope): description`
                - `fix(scope): description`
