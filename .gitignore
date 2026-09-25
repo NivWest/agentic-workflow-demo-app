@@ -8,3 +8,6 @@ htmlcov/
 *.egg-info/
 .venv/
 venv/
+*.pyc
+.pytest_cache/
+.mypy_cache/
